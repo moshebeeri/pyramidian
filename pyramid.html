@@ -194,8 +194,56 @@
             });
             
             document.getElementById('stepButton').addEventListener('click', function() {
-                advanceSimulation();
-            });
+    if (simulationPaused) { // Button is only visible when paused
+        if (stone && !stone.isPlaced && (activeMovingStone || stone.isInChamber || stone.hasBeenLifted)) {
+            // If there IS an active, unplaced stone that is either moving, in chamber, or lifted (ready for ejection)
+            // "Next Step" should advance its animation.
+            // activeMovingStone might be false if lift just completed, before ejection starts.
+            // So, check stone states too.
+            const fixedDelta = 0.1; // A small, fixed time step for discrete updates
+            
+            // Temporarily ensure activeMovingStone is true for this single step if stone is in a state that needs processing
+            let originallyActive = activeMovingStone;
+            if (!originallyActive && stone && (stone.isInChamber || stone.hasBeenLifted)) {
+                 activeMovingStone = true; 
+            }
+
+            updateSimulation(fixedDelta);
+
+            // If the step completed the stone's action (e.g., placed it), activeMovingStone would be set to false by updateSimulation.
+            // If not, and we forced it true, restore its original state (likely false if lift just finished).
+            // However, updateSimulation logic should now correctly set activeMovingStone based on whether an action is ongoing.
+            // The logic in updateSimulation when placing a stone already sets activeMovingStone = false.
+            // The logic at the start of lifting could set activeMovingStone = true.
+            // The logic at the start of ejection could set activeMovingStone = true.
+
+            // Let's refine the activeMovingStone management for stepping:
+            // updateSimulation expects activeMovingStone to be true if an automated step is to be taken.
+            // The conditions within updateSimulation (e.g. path following, lifting, ejecting)
+            // will handle the actual movement.
+            // If a stone is merely 'waiting' for its next phase (e.g. lift done, ready for eject),
+            // updateSimulation needs to correctly transition it to that phase.
+
+            // The critical part is that updateSimulation *is called*.
+            // The internal logic of updateSimulation (as modified in previous steps)
+            // should handle the transitions and setting of activeMovingStone.
+            // For example, if stone.hasBeenLifted is true, and ejection starts, activeMovingStone should be true.
+            // If ejection finishes, activeMovingStone becomes false.
+
+        } else if (!activeMovingStone && !stone && currentStage === stages.indexOf("Building Pyramid Base Layer")) { // Matched to stages array
+            // If no active stone and ready to build, "Next Step" prepares a new one.
+            advanceSimulation(); 
+        } else if (currentStage < stages.indexOf("Building Pyramid Base Layer")) { // Matched to stages array
+            // For advancing initial stages (e.g. "Preparing Site", "Creating Water Channel")
+            advanceSimulation();
+        }
+        // If a stone *is* active, but not in a state covered by the first 'if',
+        // (e.g. path following has activeMovingStone = true), calling updateSimulation() is correct.
+        // The first 'if' condition `(stone && !stone.isPlaced && (activeMovingStone || stone.isInChamber || stone.hasBeenLifted))`
+        // is designed to catch any stone that's currently in any phase of its movement or processing.
+    }
+    // If not paused, button is typically hidden.
+});
         }
         
         function createGround() {
@@ -487,6 +535,13 @@
                 addPapyrusBundles();    // Adds to global 'stone'
                 currentPathIndex = 0;   // Reset for the new stone
                 activeMovingStone = true;
+                
+                // Initialize flags for the new stone
+                stone.isPlaced = false;
+                stone.isInChamber = false;
+                stone.needsLifting = false;
+                stone.isLifting = false;
+                stone.hasBeenLifted = false; // Add this reset
 
                 // Update the last point of the globally defined stonePath to be inside the water basin
                 stonePath[stonePath.length - 1] = { 
@@ -550,83 +605,209 @@
         }
         
         function updateSimulation(deltaTime) {
-            if (!activeMovingStone || !stone || stone.isPlaced) {
-                 // If simulation is paused, we are in stage 2 (Building), and no stone is active,
-                 // it means a stone was just placed. User might click "Next Step".
-                return;
-            }
-            
-            const speed = simulationSpeed * 0.5;
-            const targetPoint = stonePath[currentPathIndex + 1];
-            
-            if (!targetPoint) {
-                console.error("Target point is undefined. PathIndex:", currentPathIndex, "Path:", stonePath);
-                activeMovingStone = false;
-                return;
-            }
-            
-            const dx = targetPoint.x - stone.position.x;
-            const dy = targetPoint.y - stone.position.y;
-            const dz = targetPoint.z - stone.position.z;
-            const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
-            
-            if (distance > 0.1) {
-                stone.position.x += (dx / distance) * speed * deltaTime;
-                stone.position.y += (dy / distance) * speed * deltaTime;
-                stone.position.z += (dz / distance) * speed * deltaTime;
-                
-                if (papyrusBundles.length > 0) {
-                    const bundlePositions = [
-                        {x: -stoneWidth/2 - 0.3, y: 0, z: 0}, {x: stoneWidth/2 + 0.3, y: 0, z: 0},
-                        {x: 0, y: 0, z: -stoneDepth/2 - 0.3}, {x: 0, y: 0, z: stoneDepth/2 + 0.3}
-                    ];
-                    papyrusBundles.forEach((bundle, i) => {
-                        bundle.position.set(
-                            stone.position.x + bundlePositions[i].x,
-                            stone.position.y - stoneHeight/2 + bundlePositions[i].y, // ensure y is relative to stone center
-                            stone.position.z + bundlePositions[i].z
-                        );
-                    });
+            // Stone Lifting Logic as per the provided snippet
+            if (stone && stone.isInChamber && stone.needsLifting && !stone.hasBeenLifted) {
+                if (!stone.isLifting) { // Start the lift
+                    stone.isLifting = true;
+                    liftingChamberWater.visible = true; // Ensure visible
+                    if (bottomValve) bottomValve.material.color.setHex(0xff0000); // Close bottom valve
+                    if (topValve) topValve.material.color.setHex(0x333333); // Reset top valve color
+                    
+                    // Initial water setup before rising:
+                    // Water should be at the entry level initially.
+                    const chamberFloorY = liftingChamber.position.y - (liftingChamber.children[0].geometry.parameters.height / 2); // Assuming first child is a wall to get chamberHeight
+                    let entryWaterHeight = stone.position.y + stoneHeight / 2 - chamberFloorY;
+                    if (entryWaterHeight <= 0) entryWaterHeight = 0.1;
+                    
+                    liftingChamberWater.scale.y = entryWaterHeight / liftingChamberWater.geometry.parameters.height;
+                    liftingChamberWater.position.y = chamberFloorY + entryWaterHeight / 2;
+
+                    document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Lifting Stone)`;
                 }
-            } else {
-                stone.position.copy(targetPoint);
-                currentPathIndex++;
+
+                // Animate lift
+                const actualLiftSpeed = liftSpeed * (simulationSpeed > 0 ? simulationSpeed / 5 : 1) * deltaTime; // Adjusted speed scaling
+
+                if (stone.position.y < stone.finalYPosition) {
+                    stone.position.y += actualLiftSpeed;
+                    // Ensure papyrus bundles move with the stone if they are still visible
+                    if (papyrusBundles.length > 0) {
+                        papyrusBundles.forEach(bundle => {
+                            bundle.position.y += actualLiftSpeed;
+                        });
+                    }
+
+                    // Animate water level rising with the stone
+                    const chamberFloorY = liftingChamber.position.y - (liftingChamber.children[0].geometry.parameters.height / 2); // Re-calculate for safety
+                    let currentWaterHeight = (stone.position.y + stoneHeight / 2) - chamberFloorY;
+                    if (currentWaterHeight <= 0) currentWaterHeight = 0.1; // Min height
+
+                    liftingChamberWater.scale.y = currentWaterHeight / liftingChamberWater.geometry.parameters.height;
+                    liftingChamberWater.position.y = chamberFloorY + currentWaterHeight / 2;
+
+                } else { // Reached target height
+                    stone.position.y = stone.finalYPosition; // Snap to final Y
+                    // Snap papyrus bundles too
+                    if (papyrusBundles.length > 0) {
+                         const yDiff = stone.finalYPosition - (stone.position.y - actualLiftSpeed); // approximate last frame's stone.position.y before snapping
+                         papyrusBundles.forEach(bundle => {
+                            bundle.position.y += yDiff; // adjust by the same difference
+                         });
+                    }
+
+
+                    stone.isLifting = false;
+                    stone.hasBeenLifted = true;
+                    if (topValve) topValve.material.color.setHex(0x00ff00); // Open top valve
+
+                    // Water level should be consistent with stone's final position
+                    const chamberFloorY = liftingChamber.position.y - (liftingChamber.children[0].geometry.parameters.height / 2);
+                    let finalWaterHeight = (stone.finalYPosition + stoneHeight / 2) - chamberFloorY;
+                    if (finalWaterHeight <= 0) finalWaterHeight = 0.1;
+
+                    liftingChamberWater.scale.y = finalWaterHeight / liftingChamberWater.geometry.parameters.height;
+                    liftingChamberWater.position.y = chamberFloorY + finalWaterHeight / 2;
+                    
+                    // activeMovingStone is not set to false here, to allow ejection phase to proceed.
+                    document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Lift Complete - Preparing Ejection)`;
+                    console.log(`Stone for layer ${currentLayerBeingBuilt} lifted to Y: ${stone.position.y.toFixed(2)}.`);
+                }
+            // Ejection Logic: Moving stone from lifted position to pyramid slot
+            } else if (stone && stone.hasBeenLifted && !stone.isPlaced) {
+                if (papyrusBundles.length > 0) {
+                    removePapyrusBundles(); 
+                }
+
+                const targetPos = stone.targetPyramidPosition;
+                // Ensure targetPos is defined
+                if (!targetPos) {
+                    console.error("CRITICAL ERROR: stone.targetPyramidPosition is undefined during ejection phase. Halting stone.");
+                    activeMovingStone = false; 
+                    return; 
+                }
                 
-                if (currentPathIndex >= stonePath.length -1 ) { // Arrived at FINAL pyramid spot
-                    if (!stone.isPlaced) {
-                        removePapyrusBundles();
-                        stone.isPlaced = true; 
-                        activeMovingStone = false; // Current stone movement is done
+                const moveSpeed = (simulationSpeed > 0 ? simulationSpeed / 5 : 1) * 0.5 * deltaTime; 
 
-                        const placedStoneMesh = stone.clone(); // Clone the visual
-                        scene.add(placedStoneMesh);
-                        placedStones.push(placedStoneMesh);
-                        
-                        scene.remove(stone); // Remove the mover
-                        stone = null;        
+                const dx = targetPos.x - stone.position.x;
+                const dz = targetPos.z - stone.position.z;
+                const distance = Math.sqrt(dx*dx + dz*dz); 
 
-                        document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Placed)";
+                if (distance > 0.1) {
+                    document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Moving to Pyramid Slot)`;
+                    stone.position.x += (dx / distance) * moveSpeed;
+                    stone.position.z += (dz / distance) * moveSpeed;
+                    stone.position.y = stone.finalYPosition; // Maintain Y position
+                } else {
+                    // Arrived at final pyramid position
+                    stone.position.copy(targetPos); 
+                    stone.isPlaced = true;
+                    activeMovingStone = false; // Automated movement for this stone is now complete.
 
-                        // Immediately prepare for the next stone if auto-running
-                        if (simulationSpeed > 0) {
-                            prepareNewStoneForPlacement();
-                        }
-                        // If in step mode (simulationPaused), next click on "Next Step" will call prepareNewStoneForPlacement via advanceSimulation
+                    const placedStoneMesh = stone.clone();
+                    scene.add(placedStoneMesh);
+                    placedStones.push(placedStoneMesh);
+                    
+                    scene.remove(stone);
+                    stone = null;
+
+                    if (topValve) topValve.material.color.setHex(0x333333); 
+                    if (bottomValve) bottomValve.material.color.setHex(0x333333); 
+                    if (liftingChamberWater) liftingChamberWater.visible = false;
+
+                    document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Placed on Layer)`;
+                    console.log(`Stone placed on Layer ${currentLayerBeingBuilt} at X:${targetPos.x.toFixed(2)}, Y:${targetPos.y.toFixed(2)}, Z:${targetPos.z.toFixed(2)}`);
+
+                    if (simulationSpeed > 0) {
+                        prepareNewStoneForPlacement();
+                    } else {
+                        document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Waiting for Next Step)`;
+                    }
+                }
+            // Path Following Logic (Else if, so it doesn't run if lifting or ejection logic ran)
+            } else if (activeMovingStone && stone && !stone.isPlaced) { 
+                const speed = simulationSpeed * 0.5; // Existing path following speed
+                const targetPoint = stonePath[currentPathIndex + 1];
+                
+                if (!targetPoint) {
+                    console.error("Target point is undefined. PathIndex:", currentPathIndex, "Path:", stonePath);
+                    activeMovingStone = false;
+                    return;
+                }
+                
+                const dx = targetPoint.x - stone.position.x;
+                const dy = targetPoint.y - stone.position.y;
+                const dz = targetPoint.z - stone.position.z;
+                const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                
+                if (distance > 0.1) {
+                    stone.position.x += (dx / distance) * speed * deltaTime;
+                    stone.position.y += (dy / distance) * speed * deltaTime;
+                    stone.position.z += (dz / distance) * speed * deltaTime;
+                    
+                    if (papyrusBundles.length > 0) {
+                        const bundlePositions = [
+                            {x: -stoneWidth/2 - 0.3, y: 0, z: 0}, {x: stoneWidth/2 + 0.3, y: 0, z: 0},
+                            {x: 0, y: 0, z: -stoneDepth/2 - 0.3}, {x: 0, y: 0, z: stoneDepth/2 + 0.3}
+                        ];
+                        papyrusBundles.forEach((bundle, i) => {
+                            bundle.position.set(
+                                stone.position.x + bundlePositions[i].x,
+                                stone.position.y - stoneHeight/2 + bundlePositions[i].y, 
+                                stone.position.z + bundlePositions[i].z
+                            );
+                        });
                     }
                 } else {
-                     // Just reached an intermediate point in the path
-                    document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + ` (Path ${currentPathIndex}/${stonePath.length -1})`;
+                    stone.position.copy(targetPoint);
+                    currentPathIndex++;
+                    
+                    if (currentPathIndex >= stonePath.length -1 ) { 
+                        // Check if this is the entry to the lifting chamber
+                        if (stone.needsLifting && !stone.isInChamber) {
+                             console.log("Stone arrived at lifting chamber entry.");
+                             stone.isInChamber = true;
+                             if (simulationSpeed === 0) {
+                                activeMovingStone = false;
+                             }
+                             // If simulationSpeed > 0, activeMovingStone remains true, allowing lifting to start automatically.
+                             document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Stone in Chamber - Preparing for Lift)`;
+                        } else if (!stone.isPlaced && !stone.needsLifting) { // Arrived at FINAL pyramid spot (direct placement)
+                            removePapyrusBundles();
+                            stone.isPlaced = true; 
+                            activeMovingStone = false;
+
+                            const placedStoneMesh = stone.clone(); 
+                            scene.add(placedStoneMesh);
+                            placedStones.push(placedStoneMesh);
+                            
+                            scene.remove(stone); 
+                            stone = null;        
+
+                            document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Placed)";
+
+                            if (simulationSpeed > 0) {
+                                prepareNewStoneForPlacement();
+                            }
+                        }
+                    } else {
+                        document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + ` (Path ${currentPathIndex}/${stonePath.length -1})`;
+                    }
                 }
+            } else {
+                 // If simulation is paused, we are in stage 2 (Building), and no stone is active,
+                 // it means a stone was just placed or lifted. User might click "Next Step".
+                 if (simulationPaused && currentStage === stages.indexOf("Building Pyramid Base Layer") && !activeMovingStone && !stone) {
+                     document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Waiting for Next Step)";
+                 } else if (simulationPaused && stone && stone.hasBeenLifted && !activeMovingStone) {
+                     document.getElementById('stageInfo').textContent = `Stage: ${stages[currentStage]} - Layer ${currentLayerBeingBuilt} (Lift Complete - Awaiting Placement)`;
+                 }
             }
             
             // Auto-advance stages based on elapsed time if not paused
             if (!simulationPaused && simulationSpeed > 0) {
-                // updateSimulation(delta); // This was calling itself, removed
-                
                 // Auto-advancement of initial stages (0 and 1) is handled in advanceSimulation itself
                 // Stage 2 (Building) is a continuous loop driven by prepareNewStoneForPlacement
             } else if (simulationPaused && currentStage === stages.indexOf("Building Pyramid Base Layer") && !activeMovingStone && !stone) {
-                 // This is when a stone is placed in step mode. Waiting for "Next Step".
                  document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Waiting for Next Step)";
             }
         }
