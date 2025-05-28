@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pyramid Construction - Single Stone Simulation</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            max-width: 350px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        #speedControl {
+            width: 200px;
+        }
+        button {
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #stepButton {
+            display: none;
+        }
+        #stageInfo {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="info">
+            <h3>Simplified Pyramid Construction</h3>
+            <p>This simulation shows a single stone:</p>
+            <ol>
+                <li>Made buoyant with papyrus bundles</li>
+                <li>Transported through a water channel</li>
+                <li>Positioned at the base of the pyramid</li>
+            </ol>
+            <p>The stone is wrapped with papyrus bundles that allow it to float on water, reducing the effort needed to transport it.</p>
+            <p>Note: Actual pyramid stones varied in size. Core stones in the Great Pyramid typically measured around 1.3m x 1.3m x 0.7m and weighed 2,500 kg.</p>
+        </div>
+        <div id="controls">
+            <div>
+                <label for="speedControl">Simulation Speed: </label>
+                <input type="range" id="speedControl" min="0" max="10" value="5">
+            </div>
+            <button id="stepButton">Next Step</button>
+            <div id="stageInfo">Stage: Preparing Site</div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // Main simulation variables
+        let scene, camera, renderer, controls;
+        let ground, waterChannel, waterBasin;
+        let stone, papyrusBundles = [];
+        let currentStage = -1;
+        let simulationSpeed = 5;
+        let simulationPaused = false;
+        let clock = new THREE.Clock();
+        let elapsedTime = 0;
+        let simulationAdvanced = false;
+        
+        // Pyramid configuration
+        const baseWidth = 11; // Number of stones along width dimension
+        const baseDepth = 6;  // Number of stones along depth dimension (reduced to account for longer stones)
+        const pyramidHeight = 6; // Number of layers
+        const pyramidGrid = []; // In-memory representation of the pyramid
+        const placedStones = []; // Array of placed stone objects in the scene
+        let nextStonePosition = null; // Next position to place a stone (world coords)
+        let activeMovingStone = false; // Flag to indicate if a stone is currently being moving
+        
+        // Simulation stages
+        const stages = [
+            "Preparing Site",
+            "Creating Water Channel and Basin",
+            "Building Pyramid Base Layer" 
+        ];
+        
+        // Stone dimensions - keeping rectangular shape as in real pyramids
+        const stoneWidth = 2;
+        const stoneHeight = 1;
+        const stoneDepth = 4; // Rectangular stones (2x4) as in actual pyramids
+        
+        // Colors
+        const stoneColor = 0xd2b48c;
+        const waterColor = 0x1a75ff; // Deeper blue for water visibility
+        const papyrusColor = 0x8b4513;
+        const groundColor = 0xc2b280;
+        
+        // Path for the stone to follow
+        const stonePath = [
+            { x: -40, y: 0.5, z: 0 },  // Starting point (quarry)
+            { x: -30, y: 0.5, z: 0 },  // Path point 1
+            { x: -20, y: 0.5, z: 0 },  // Path point 2
+            { x: -10, y: 0.5, z: 0 },  // Path point 3
+            { x: 0, y: 0.5, z: 0 },    // End of channel
+            { x: 0, y: 0, z: 0 }       // Final position (after removing papyrus)
+        ];
+        
+        let currentPathIndex = 0;
+        
+        // Initialize the scene
+        init();
+        animate();
+        
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Sky blue
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(30, 20, 30);
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('container').appendChild(renderer.domElement);
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 100, 50);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 500;
+            scene.add(directionalLight);
+            
+            // Add orbit controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Create ground
+            createGround();
+            
+            // Event listeners
+            window.addEventListener('resize', onWindowResize);
+            
+            // Setup controls
+            document.getElementById('speedControl').addEventListener('input', function(e) {
+                simulationSpeed = parseInt(e.target.value);
+                if (simulationSpeed === 0) {
+                    simulationPaused = true;
+                    document.getElementById('stepButton').style.display = 'block';
+                } else {
+                    simulationPaused = false;
+                    document.getElementById('stepButton').style.display = 'none';
+                }
+            });
+            
+            document.getElementById('stepButton').addEventListener('click', function() {
+                advanceSimulation();
+            });
+        }
+        
+        function createGround() {
+            // Create the ground
+            const groundGeometry = new THREE.PlaneGeometry(100, 100);
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: groundColor, side: THREE.DoubleSide });
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Create a grid helper
+            const gridHelper = new THREE.GridHelper(100, 100);
+            scene.add(gridHelper);
+            
+            // Calculate pyramid base dimensions - correctly accounting for rectangular stones
+            // To get a square base with 2×4 stones, we use different numbers of stones along each dimension
+            const pyramidOutlineWidth = baseWidth * stoneWidth;   // 11 * 2 = 22
+            const pyramidOutlineDepth = baseDepth * stoneDepth;   // 6 * 4 = 24 (approximately square)
+            
+            // Add pyramid base outline for visual reference - rectangular base
+            const baseOutlineGeometry = new THREE.BoxGeometry(pyramidOutlineWidth, 0.1, pyramidOutlineDepth);
+            const baseOutlineMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xFF0000, 
+                wireframe: true,
+                transparent: true,
+                opacity: 0.7 // More visible
+            });
+            const baseOutline = new THREE.Mesh(baseOutlineGeometry, baseOutlineMaterial);
+            baseOutline.position.y = 0.05;
+            scene.add(baseOutline);
+            
+            // Add text to show dimensions
+            console.log(`Pyramid base dimensions: ${pyramidOutlineWidth}w × ${pyramidOutlineDepth}d - (${baseWidth}×${baseDepth} stone grid with ${stoneWidth}×${stoneDepth} stone dimensions)`);
+        }
+        
+        function createWaterChannel() {
+            // Create a straight water channel to the left side of the pyramid
+            createChannelSegment(-40, 0, 0, 40, 0); // Straight channel ending at center
+            
+            // Create water basin at the building site
+            // Calculate basin size based on pyramid dimensions
+            const pyramidOutlineWidth = baseWidth * stoneWidth;   // 11 * 2 = 22
+            const pyramidOutlineDepth = baseDepth * stoneDepth;   // 6 * 4 = 24
+            
+            // Ensure basin is larger than the pyramid base
+            const marginWidth = 10; // Margin for the width
+            const marginDepth = 10; // Margin for the depth
+            const basinWidth = pyramidOutlineWidth + marginWidth;
+            const basinDepth = 1.5;
+            const basinLength = pyramidOutlineDepth + marginDepth;
+            
+            const basinGeometry = new THREE.BoxGeometry(basinWidth, basinDepth, basinLength);
+            const basinMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x8b4513, // Brown for basin walls
+                transparent: true, 
+                opacity: 0.8
+            });
+            const basin = new THREE.Mesh(basinGeometry, basinMaterial);
+            basin.position.set(0, 0, 0);
+            scene.add(basin);
+            
+            // Add water to the basin - more visible water
+            const waterGeometry = new THREE.BoxGeometry(basinWidth - 0.5, basinDepth - 0.3, basinLength - 0.5);
+            const waterMaterial = new THREE.MeshStandardMaterial({
+                color: waterColor,
+                transparent: true,
+                opacity: 0.6  // More visible water
+            });
+            waterBasin = new THREE.Mesh(waterGeometry, waterMaterial);
+            waterBasin.position.set(0, 0.3, 0); // Raise water level slightly
+            scene.add(waterBasin);
+            
+            console.log(`Water basin dimensions: ${basinWidth}w × ${basinLength}d to fit ${pyramidOutlineWidth}w × ${pyramidOutlineDepth}d pyramid`);
+        }
+        
+        function createChannelSegment(x, y, z, lengthX, lengthZ) {
+            // Create a segment of the water channel
+            const channelWidth = 6;
+            const channelDepth = 1.5;
+            const channelLength = Math.max(Math.abs(lengthX), Math.abs(lengthZ));
+            
+            // Create channel structure
+            const channelGeometry = new THREE.BoxGeometry(
+                lengthX !== 0 ? channelLength : channelWidth,
+                channelDepth,
+                lengthZ !== 0 ? channelLength : channelWidth
+            );
+            const channelMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x8b4513,  // Brown for channel
+                side: THREE.DoubleSide
+            });
+            const channel = new THREE.Mesh(channelGeometry, channelMaterial);
+            
+            // Position the channel segment
+            channel.position.set(
+                x + (lengthX / 2),
+                y,
+                z + (lengthZ / 2)
+            );
+            
+            scene.add(channel);
+            
+            // Add water inside the channel
+            const waterGeometry = new THREE.BoxGeometry(
+                lengthX !== 0 ? channelLength - 0.5 : channelWidth - 0.5,
+                channelDepth - 0.3,
+                lengthZ !== 0 ? channelLength - 0.5 : channelWidth - 0.5
+            );
+            const waterMaterial = new THREE.MeshStandardMaterial({
+                color: waterColor,
+                transparent: true,
+                opacity: 0.6  // More visible water
+            });
+            const water = new THREE.Mesh(waterGeometry, waterMaterial);
+            water.position.set(
+                x + (lengthX / 2),
+                y + 0.3,
+                z + (lengthZ / 2)
+            );
+            scene.add(water);
+        }
+        
+        function createStone() {
+            // Create a limestone block
+            const stoneGeometry = new THREE.BoxGeometry(stoneWidth, stoneHeight, stoneDepth);
+            const stoneMaterial = new THREE.MeshStandardMaterial({ color: stoneColor });
+            const newStone = new THREE.Mesh(stoneGeometry, stoneMaterial);
+            
+            // Position at the start of path (quarry)
+            newStone.position.copy(stonePath[0]);
+            newStone.castShadow = true;
+            newStone.receiveShadow = true;
+            newStone.isPlaced = false; // Custom property
+            scene.add(newStone);
+            
+            return newStone;
+        }
+        
+        function addPapyrusBundles() {
+            // Create papyrus bundles around the stone
+            const bundleGeometry = new THREE.CylinderGeometry(0.3, 0.3, stoneDepth + 0.5, 8);
+            const bundleMaterial = new THREE.MeshStandardMaterial({ color: papyrusColor });
+            
+            const positions = [
+                {x: -stoneWidth/2 - 0.3, y: 0, z: 0},
+                {x: stoneWidth/2 + 0.3, y: 0, z: 0},
+                {x: 0, y: 0, z: -stoneDepth/2 - 0.3},
+                {x: 0, y: 0, z: stoneDepth/2 + 0.3}
+            ];
+            
+            positions.forEach(pos => {
+                const bundle = new THREE.Mesh(bundleGeometry, bundleMaterial);
+                if (pos.x !== 0) {
+                    bundle.rotation.z = Math.PI/2;
+                } else {
+                    bundle.rotation.x = Math.PI/2;
+                }
+                bundle.position.set(
+                    stone.position.x + pos.x,
+                    stone.position.y - stoneHeight/2,
+                    stone.position.z + pos.z
+                );
+                bundle.castShadow = true;
+                scene.add(bundle);
+                papyrusBundles.push(bundle);
+            });
+        }
+        
+        function removePapyrusBundles() {
+            // Remove papyrus bundles
+            papyrusBundles.forEach(bundle => {
+                scene.remove(bundle);
+            });
+            papyrusBundles = [];
+        }
+        
+        function initializePyramidGrid() {
+            // Initialize the pyramid grid (layer by layer)
+            for (let layer = 0; layer < pyramidHeight; layer++) {
+                const layerWidthSize = baseWidth - (layer * 2); // Each layer gets smaller
+                const layerDepthSize = baseDepth - (layer * 1); // Each layer gets smaller
+                const layerGrid = [];
+                
+                for (let z = 0; z < layerDepthSize; z++) {
+                    const row = [];
+                    for (let x = 0; x < layerWidthSize; x++) {
+                        // Default: position is available (null means no stone)
+                        let cellStatus = null;
+                        
+                        // Check if this is the central pillar (in the middle of pyramid)
+                        const isCenterX = x === Math.floor(layerWidthSize / 2);
+                        const isCenterZ = z === Math.floor(layerDepthSize / 2);
+                        
+                        // Check if this is part of the water channel (only affects base layer)
+                        // Modified to only block the actual channel path, not the whole center line
+                        const isChannel = layer === 0 && 
+                                        z === Math.floor(layerDepthSize / 2) && 
+                                        x < Math.floor(layerWidthSize / 2) - 1; // Reduced reserved area
+                        
+                        // Mark as unavailable if it's the central pillar or water channel
+                        if ((isCenterX && isCenterZ) || isChannel) {
+                            cellStatus = 'reserved'; // This position is not available
+                        }
+                        
+                        row.push(cellStatus);
+                    }
+                    layerGrid.push(row);
+                }
+                pyramidGrid.push(layerGrid);
+            }
+            
+            // Store the base layer sizes as global variables for later use
+            window.layerWidthSize = baseWidth;
+            window.layerDepthSize = baseDepth;
+            
+            // Visualize the grid for debugging
+            console.log("Pyramid Base Layer Grid:", pyramidGrid[0]);
+            visualizeGridInConsole(pyramidGrid[0]);
+        }
+        
+        // Utility function to visualize the grid in console
+        function visualizeGridInConsole(grid) {
+            let output = "Grid visualization:\n";
+            for (let z = 0; z < grid.length; z++) {
+                let row = "";
+                for (let x = 0; x < grid[z].length; x++) {
+                    if (grid[z][x] === null) row += "O "; // Available
+                    else if (grid[z][x] === 'reserved') row += "X "; // Reserved
+                    else row += "P "; // Planned
+                }
+                output += row + "\n";
+            }
+            console.log(output);
+        }
+        
+        function findNextAvailablePosition() {
+            // For now, just look in the base layer
+            const layer = 0;
+            const layerGrid = pyramidGrid[layer];
+            
+            // Calculate offset for pyramid to be centered in water basin
+            const centerWidthOffset = Math.floor(baseWidth / 2);
+            const centerDepthOffset = Math.floor(baseDepth / 2);
+            
+            // Fixed placement order: start with outer edges first
+            // This ensures we start placing from the first line, not the second
+            for (let z = 0; z < layerDepthSize; z++) {
+                for (let x = 0; x < layerWidthSize; x++) {
+                    // Start with the leftmost edges first
+                    const checkX = x;
+                    const checkZ = z;
+                    
+                    // Check if this position is available (null)
+                    if (layerGrid[checkZ][checkX] === null) {
+                        // Calculate actual position in 3D space
+                        // Position stones centered in the water basin
+                        const posX = (checkX - centerWidthOffset) * stoneWidth;
+                        const posY = layer * stoneHeight; // Height based on layer
+                        const posZ = (checkZ - centerDepthOffset) * stoneDepth;
+                        
+                        // Mark as planned (will be filled)
+                        layerGrid[checkZ][checkX] = 'planned';
+                        
+                        console.log(`Placing stone at grid (${checkX},${checkZ}) -> world (${posX},${posY},${posZ})`);
+                        visualizeGridInConsole(layerGrid); // Show updated grid after each placement
+                        
+                        // Return the world position
+                        return { x: posX, y: posY, z: posZ };
+                    }
+                }
+            }
+            
+            return null; // No available position
+        }
+        
+        function prepareNewStoneForPlacement() {
+            if (currentStage !== stages.indexOf("Building Pyramid Base Layer")) {
+                return; // Only prepare new stones during the building stage
+            }
+
+            nextStonePosition = findNextAvailablePosition(); 
+            if (nextStonePosition) {
+                if (stone) scene.remove(stone); // Remove previous floating stone if any (e.g. from manual step)
+                papyrusBundles.forEach(b => scene.remove(b)); // Clear old bundles
+                papyrusBundles = [];
+
+                stone = createStone(); // Creates global 'stone' at quarry
+                addPapyrusBundles();    // Adds to global 'stone'
+                currentPathIndex = 0;   // Reset for the new stone
+                activeMovingStone = true;
+
+                // Update the last point of the globally defined stonePath to be inside the water basin
+                stonePath[stonePath.length - 1] = { 
+                    x: nextStonePosition.x, 
+                    y: nextStonePosition.y, 
+                    z: nextStonePosition.z 
+                };
+                
+                console.log("Preparing new stone, target:", nextStonePosition);
+                document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Transporting)";
+            } else {
+                console.log("Pyramid base layer complete!");
+                activeMovingStone = false;
+                if (stone) scene.remove(stone); 
+                stone = null;
+                papyrusBundles.forEach(b => scene.remove(b));
+                papyrusBundles = [];
+                currentStage = stages.length; // Mark as complete
+                document.getElementById('stageInfo').textContent = 'Stage: Base Layer Complete';
+            }
+        }
+        
+        function advanceSimulation() {
+            // If currentStage is already at max, or if we are auto-running and a stone is active, do nothing.
+            if (currentStage >= stages.length || (simulationSpeed > 0 && activeMovingStone) ) {
+                 if (currentStage === stages.indexOf("Building Pyramid Base Layer") && simulationPaused && !activeMovingStone && !stone) {
+                    // Special case for step mode: if building is current, and no stone is active (one was just placed)
+                    // then "Next Step" should prepare the next stone.
+                    prepareNewStoneForPlacement();
+                }
+                return;
+            }
+            
+            let previousStage = currentStage;
+            currentStage++; // Increment stage first, then act. If starting from -1, first stage is 0.
+             if (previousStage === -1 && currentStage === 0) { // Initial call, effectively starting stage 0
+                 // currentStage is now 0
+             }
+
+
+            document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] || 'Completed';
+            
+            // Handle specific stage actions
+            switch(currentStage) {
+                case 0: // Preparing Site
+                    // Auto-advance if not stepping, or wait for next click
+                    if (simulationSpeed > 0) advanceSimulation();
+                    break;
+                case 1: // Creating Water Channel and Basin
+                    createWaterChannel();
+                    initializePyramidGrid(); 
+                    if (simulationSpeed > 0) advanceSimulation(); // Auto-advance to start building
+                    else currentStage = 1; // Stay here, next click will go to stage 2 and prepare stone
+                    break;
+                case 2: // Building Pyramid Base Layer
+                    // This stage is now the main loop. First stone is prepared here.
+                    prepareNewStoneForPlacement();
+                    break;
+                // No more stages beyond this for the base layer construction
+            }
+        }
+        
+        function updateSimulation(deltaTime) {
+            if (!activeMovingStone || !stone || stone.isPlaced) {
+                 // If simulation is paused, we are in stage 2 (Building), and no stone is active,
+                 // it means a stone was just placed. User might click "Next Step".
+                return;
+            }
+            
+            const speed = simulationSpeed * 0.5;
+            const targetPoint = stonePath[currentPathIndex + 1];
+            
+            if (!targetPoint) {
+                console.error("Target point is undefined. PathIndex:", currentPathIndex, "Path:", stonePath);
+                activeMovingStone = false;
+                return;
+            }
+            
+            const dx = targetPoint.x - stone.position.x;
+            const dy = targetPoint.y - stone.position.y;
+            const dz = targetPoint.z - stone.position.z;
+            const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            
+            if (distance > 0.1) {
+                stone.position.x += (dx / distance) * speed * deltaTime;
+                stone.position.y += (dy / distance) * speed * deltaTime;
+                stone.position.z += (dz / distance) * speed * deltaTime;
+                
+                if (papyrusBundles.length > 0) {
+                    const bundlePositions = [
+                        {x: -stoneWidth/2 - 0.3, y: 0, z: 0}, {x: stoneWidth/2 + 0.3, y: 0, z: 0},
+                        {x: 0, y: 0, z: -stoneDepth/2 - 0.3}, {x: 0, y: 0, z: stoneDepth/2 + 0.3}
+                    ];
+                    papyrusBundles.forEach((bundle, i) => {
+                        bundle.position.set(
+                            stone.position.x + bundlePositions[i].x,
+                            stone.position.y - stoneHeight/2 + bundlePositions[i].y, // ensure y is relative to stone center
+                            stone.position.z + bundlePositions[i].z
+                        );
+                    });
+                }
+            } else {
+                stone.position.copy(targetPoint);
+                currentPathIndex++;
+                
+                if (currentPathIndex >= stonePath.length -1 ) { // Arrived at FINAL pyramid spot
+                    if (!stone.isPlaced) {
+                        removePapyrusBundles();
+                        stone.isPlaced = true; 
+                        activeMovingStone = false; // Current stone movement is done
+
+                        const placedStoneMesh = stone.clone(); // Clone the visual
+                        scene.add(placedStoneMesh);
+                        placedStones.push(placedStoneMesh);
+                        
+                        scene.remove(stone); // Remove the mover
+                        stone = null;        
+
+                        document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Placed)";
+
+                        // Immediately prepare for the next stone if auto-running
+                        if (simulationSpeed > 0) {
+                            prepareNewStoneForPlacement();
+                        }
+                        // If in step mode (simulationPaused), next click on "Next Step" will call prepareNewStoneForPlacement via advanceSimulation
+                    }
+                } else {
+                     // Just reached an intermediate point in the path
+                    document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + ` (Path ${currentPathIndex}/${stonePath.length -1})`;
+                }
+            }
+            
+            // Auto-advance stages based on elapsed time if not paused
+            if (!simulationPaused && simulationSpeed > 0) {
+                // updateSimulation(delta); // This was calling itself, removed
+                
+                // Auto-advancement of initial stages (0 and 1) is handled in advanceSimulation itself
+                // Stage 2 (Building) is a continuous loop driven by prepareNewStoneForPlacement
+            } else if (simulationPaused && currentStage === stages.indexOf("Building Pyramid Base Layer") && !activeMovingStone && !stone) {
+                 // This is when a stone is placed in step mode. Waiting for "Next Step".
+                 document.getElementById('stageInfo').textContent = 'Stage: ' + stages[currentStage] + " (Waiting for Next Step)";
+            }
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = clock.getDelta();
+            elapsedTime += delta;
+            
+            // Update controls
+            controls.update();
+            
+            // Advance simulation based on time if not paused
+            if (!simulationPaused) {
+                updateSimulation(delta);
+                
+                // Auto-advance stages based on elapsed time
+                if (simulationSpeed > 0 && currentStage < stages.length - 1) {
+                    if (Math.floor(elapsedTime) % (15 / simulationSpeed) === 0 && 
+                        Math.floor(elapsedTime) > 0 && 
+                        !simulationAdvanced) {
+                        advanceSimulation();
+                        simulationAdvanced = true;
+                    } else if (Math.floor(elapsedTime) % (15 / simulationSpeed) !== 0) {
+                        simulationAdvanced = false;
+                    }
+                }
+            }
+            
+            // Render the scene
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
